@@ -17,6 +17,11 @@
         .btn-follow { background: #8957e5; }
         .status { font-size: 0.85rem; background: #21262d; padding: 6px 14px; border-radius: 20px; border: 1px solid #30363d; color: #58a6ff; flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; font-weight: 600; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
         .status:active { background: #30363d; }
+        
+        /* Warnbanner für Notfall- und Gefahrenmeldungen */
+        #alertBanner { display: none; background: #da3633; color: #ffffff; padding: 12px 15px; font-weight: bold; text-align: center; font-size: 0.95rem; border-bottom: 2px solid #f85149; box-shadow: 0 4px 15px rgba(218, 54, 51, 0.5); z-index: 999; animation: pulseBanner 1.5s infinite alternate; }
+        @keyframes pulseBanner { 0% { background: #da3633; } 100% { background: #b62324; } }
+
         #map { flex: 1; width: 100%; height: 100%; }
 
         /* Modal Overlay für Stationen-Liste */
@@ -27,9 +32,11 @@
         .modal-close { background: none; border: none; color: #8b949e; font-size: 1.5rem; cursor: pointer; line-height: 1; }
         .modal-body { padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
         .station-item { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+        .station-item-emergency { border: 1px solid #f85149; background: rgba(218, 54, 51, 0.1); }
         .station-title { font-weight: 600; font-size: 0.95rem; color: #c9d1d9; display: flex; justify-content: space-between; }
         .badge-on { background: rgba(35, 134, 54, 0.2); color: #3fb950; border: 1px solid #238636; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
         .badge-off { background: rgba(210, 153, 34, 0.2); color: #d29922; border: 1px solid #d29922; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
+        .badge-emergency { background: rgba(248, 81, 73, 0.2); color: #f85149; border: 1px solid #f85149; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
         .station-details { font-size: 0.8rem; color: #8b949e; display: flex; gap: 12px; flex-wrap: wrap; }
     </style>
 </head>
@@ -42,6 +49,10 @@
             <button id="btnCenter" class="btn btn-follow" onclick="toggleAutoFollow()">🎯 Auto-Zentrieren: AN</button>
         </div>
     </header>
+
+    <!-- Gefahren- & Notfall-Warnbanner -->
+    <div id="alertBanner">🚨 ACHTUNG: Einsatzfahrzeug in der Nähe! Bitte Rettungsgasse bilden!</div>
+
     <div id="map"></div>
 
     <!-- Modal für Liste der ITS-Stationen -->
@@ -69,6 +80,7 @@
         var autoFollow = true;
         var bleDevice, gpsChar;
         var lastReceivedData = null;
+        var lastSpokenWarning = '';
 
         map.on('dragstart', function() {
             autoFollow = false;
@@ -134,6 +146,17 @@
             return deg.toFixed(0) + '° (' + dirs[idx] + ')';
         }
 
+        function triggerVoiceWarning(text) {
+            if (window.speechSynthesis && lastSpokenWarning !== text) {
+                lastSpokenWarning = text;
+                var msg = new SpeechSynthesisUtterance(text);
+                msg.lang = 'de-DE';
+                msg.rate = 1.05;
+                window.speechSynthesis.speak(msg);
+                setTimeout(() => { lastSpokenWarning = ''; }, 15000); // 15s Wiederholsperre
+            }
+        }
+
         function renderModalList() {
             var container = document.getElementById('modalList');
             if (!lastReceivedData || !lastReceivedData.v || lastReceivedData.v.length === 0) {
@@ -142,9 +165,12 @@
             }
             var html = '';
             lastReceivedData.v.forEach(v => {
+                var isEmergency = (v.st === 11 || v.m === 'DENM');
                 var isVisible = (v.vp === 1);
-                var badge = isVisible ? '<span class="badge-on">🟢 Auf Karte</span>' : '<span class="badge-off">🟡 Ausgeblendet (Kein GPS)</span>';
-                html += '<div class="station-item">' +
+                var badge = isEmergency ? '<span class="badge-emergency">🚨 NOTFALL</span>' : (isVisible ? '<span class="badge-on">🟢 Auf Karte</span>' : '<span class="badge-off">🟡 Ausgeblendet (Kein GPS)</span>');
+                var itemClass = isEmergency ? 'station-item station-item-emergency' : 'station-item';
+                
+                html += '<div class="' + itemClass + '">' +
                     '<div class="station-title"><span>' + v.t + '</span>' + badge + '</div>' +
                     '<div class="station-details">' +
                     '<span>ID: <b>' + v.i + '</b></span>' +
@@ -180,16 +206,50 @@
                         lastReceivedData = data;
                         document.getElementById('stat').innerText = 'ITS-Stationen: ' + data.c + ' 🔍';
                         renderModalList();
+
+                        var hasEmergency = false;
+                        var hasHazard = false;
                         var activeIds = {};
+
                         data.v.forEach(v => {
+                            if (v.st === 11) {
+                                hasEmergency = true;
+                            } else if (v.m === 'DENM') {
+                                hasHazard = true;
+                            }
+
                             if (v.vp === 1) {
                                 activeIds[v.i] = true;
-                                var color = (v.t.indexOf('Ampel') !== -1 || v.t.indexOf('RSU') !== -1) ? '#e3b341' : '#1f6feb';
-                                var popup = '<div style="color:#000"><b>' + v.t + '</b><br>ID: ' + v.i + '<br>Geschwindigkeit: ' + v.s + ' km/h<br>Fahrtrichtung: ' + getCompassDirection(v.h) + '<br>Signal: ' + v.r + ' dBm</div>';
-                                if (markers[v.i]) { markers[v.i].setLatLng([v.la, v.lo]).setPopupContent(popup); }
-                                else { var m = L.circleMarker([v.la, v.lo], { radius: 10, fillColor: color, color: '#ffffff', weight: 2, fillOpacity: 0.9 }).bindPopup(popup); markers[v.i] = m; featureGroup.addLayer(m); }
+                                var color = (v.st === 11) ? '#f85149' : ((v.st === 15 || v.t.indexOf('Ampel') !== -1) ? '#e3b341' : '#1f6feb');
+                                var radius = (v.st === 11) ? 14 : 10;
+                                var popup = '<div style="color:#000"><b>' + (v.st === 11 ? '🚨 ' : '') + v.t + '</b><br>ID: ' + v.i + '<br>Geschwindigkeit: ' + v.s + ' km/h<br>Fahrtrichtung: ' + getCompassDirection(v.h) + '<br>Signal: ' + v.r + ' dBm</div>';
+                                
+                                if (markers[v.i]) { 
+                                    markers[v.i].setLatLng([v.la, v.lo]).setPopupContent(popup); 
+                                } else { 
+                                    var m = L.circleMarker([v.la, v.lo], { radius: radius, fillColor: color, color: '#ffffff', weight: 2, fillOpacity: 0.9 }).bindPopup(popup); 
+                                    markers[v.i] = m; 
+                                    featureGroup.addLayer(m); 
+                                }
                             }
                         });
+
+                        // Steuerungs-Logik für Gefahrenbanner & Sprachwarnung
+                        var banner = document.getElementById('alertBanner');
+                        if (hasEmergency) {
+                            banner.style.display = 'block';
+                            banner.style.background = '#da3633';
+                            banner.innerText = '🚨 ACHTUNG: Einsatzfahrzeug in der Nähe! Bitte Rettungsgasse bilden!';
+                            triggerVoiceWarning("Achtung! Einsatzfahrzeug in der Nähe! Bitte Rettungsgasse bilden!");
+                        } else if (hasHazard) {
+                            banner.style.display = 'block';
+                            banner.style.background = '#d29922';
+                            banner.innerText = '⚠️ ACHTUNG: Gefahrenstelle / Stauende voraus!';
+                            triggerVoiceWarning("Achtung! Gefahrenstelle voraus!");
+                        } else {
+                            banner.style.display = 'none';
+                        }
+
                         for (var id in markers) { if (!activeIds[id]) { featureGroup.removeLayer(markers[id]); map.removeLayer(markers[id]); delete markers[id]; } }
                         map.invalidateSize();
                     } catch (ex) {}
