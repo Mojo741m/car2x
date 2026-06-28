@@ -66,11 +66,10 @@
         var featureGroup = L.featureGroup().addTo(map);
         var userMarker = null;
         var userLat = null, userLon = null;
-        var autoFollow = true; // Automatisches Nachführen der Karte bei Bewegung
+        var autoFollow = true;
         var bleDevice, gpsChar;
         var lastReceivedData = null;
 
-        // Wenn der Nutzer die Karte manuell verschiebt, Auto-Follow pausieren
         map.on('dragstart', function() {
             autoFollow = false;
             updateFollowButton();
@@ -83,7 +82,7 @@
                 btn.innerText = '🎯 Auto-Zentrieren: AN';
             } else {
                 btn.className = 'btn btn-sec';
-                btn.innerText = '🎯 Zentrieren (PAUSIRT)';
+                btn.innerText = '🎯 Zentrieren (PAUSIERT)';
             }
         }
 
@@ -105,7 +104,6 @@
                 map.setView([lat, lon], 16); 
             }
 
-            // Automatisches sanftes Nachführen der Karte in Bewegung
             if (autoFollow) {
                 map.panTo([lat, lon], { animate: true, duration: 0.8 });
             }
@@ -154,9 +152,12 @@
             try {
                 document.getElementById('stat').innerText = 'Suche Bluetooth...';
                 
+                // Exklusiver Filter: Zeigt NUR Geräte an, die den exakten Car2X Service ausstrahlen!
                 bleDevice = await navigator.bluetooth.requestDevice({
-                    acceptAllDevices: true,
-                    optionalServices: ['12345678-1234-5678-1234-56789abcdef0']
+                    filters: [
+                        { name: 'Car2X-Sniffer' },
+                        { services: ['12345678-1234-5678-1234-56789abcdef0'] }
+                    ]
                 });
 
                 const server = await bleDevice.gatt.connect();
