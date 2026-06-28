@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ESP32-C5 ETSI ITS Live-Karte</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        html, body { margin: 0; padding: 0; width: 100%; height: 100vh; height: 100dvh; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0d1117; color: #c9d1d9; display: flex; flex-direction: column; overflow: hidden; }
+        header { background: #161b22; padding: 12px 15px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid #30363d; z-index: 1000; padding-top: max(12px, env(safe-area-inset-top)); }
+        h1 { margin: 0; font-size: 1.1rem; color: #58a6ff; display: flex; align-items: center; justify-content: space-between; }
+        .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .btn { background: #238636; color: #fff; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
+        .btn-ble { background: #1f6feb; }
+        .btn-sec { background: #30363d; color: #c9d1d9; }
+        .status { font-size: 0.8rem; background: #21262d; padding: 6px 10px; border-radius: 20px; border: 1px solid #30363d; color: #7d8590; flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #map { flex: 1; width: 100%; height: 100%; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🚗 ETSI ITS Car2X <span id="stat" class="status">Bereit</span></h1>
+        <div class="controls">
+            <button class="btn btn-ble" onclick="connectBLE()">📡 Bluetooth verbinden</button>
+            <button class="btn btn-sec" onclick="setManualMode()">📍 Ort wählen</button>
+            <button class="btn" onclick="centerMap()">🎯 Zentrieren</button>
+        </div>
+    </header>
+    <div id="map"></div>
+
+    <script>
+        var map = L.map('map', { zoomControl: false }).setView([51.1657, 10.4515], 6); // Deutschland Übersicht
+        L.control.zoom({ position: 'bottomright' }).addTo(map);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap', maxZoom: 19 }).addTo(map);
+
+        var markers = {};
+        var featureGroup = L.featureGroup().addTo(map);
+        var userMarker = null;
+        var userLat = null, userLon = null;
+        var bleDevice, gpsChar;
+
+        function updateUserMarker(lat, lon) {
+            userLat = lat; userLon = lon;
+            var popup = '<div style="color:#000"><b>📍 Empfänger / iPhone</b></div>';
+            if (userMarker) { userMarker.setLatLng([lat, lon]); }
+            else { userMarker = L.circleMarker([lat, lon], { radius: 12, fillColor: '#238636', color: '#ffffff', weight: 3, fillOpacity: 1.0 }).addTo(map).bindPopup(popup); map.setView([lat, lon], 15); }
+            
+            if (gpsChar) {
+                var str = lat.toFixed(6) + ',' + lon.toFixed(6);
+                gpsChar.writeValue(new TextEncoder().encode(str)).catch(e => console.log(e));
+            }
+        }
+
+        if (navigator.geolocation) {
+            navigator.geolocation.watchPosition(function(pos) { updateUserMarker(pos.coords.latitude, pos.coords.longitude); },
+            function(err) { console.log(err); }, { enableHighAccuracy: true });
+        }
+
+        var manualSelecting = false;
+        function setManualMode() { manualSelecting = true; alert('Klicke auf der Karte auf deinen Standort!'); }
+        map.on('click', function(e) { if (manualSelecting) { updateUserMarker(e.latlng.lat, e.latlng.lng); manualSelecting = false; } });
+        function centerMap() { if (userLat && userLon) map.setView([userLat, userLon], 15); }
+
+        async function connectBLE() {
+            try {
+                document.getElementById('stat').innerText = 'Suche Bluetooth...';
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: 'Car2X-Sniffer' }],
+                    optionalServices: ['12345678-1234-5678-1234-56789abcdef0']
+                });
+                const server = await bleDevice.gatt.connect();
+                const service = await server.getPrimaryService('12345678-1234-5678-1234-56789abcdef0');
+                const vehChar = await service.getCharacteristic('12345678-1234-5678-1234-56789abcdef1');
+                gpsChar = await service.getCharacteristic('12345678-1234-5678-1234-56789abcdef2');
+                
+                await vehChar.startNotifications();
+                vehChar.addEventListener('characteristicvaluechanged', (e) => {
+                    const str = new TextDecoder().decode(e.target.value);
+                    try {
+                        const data = JSON.parse(str);
+                        document.getElementById('stat').innerText = 'ITS-Stationen: ' + data.c;
+                        var activeIds = {};
+                        data.v.forEach(v => {
+                            if (v.vp === 1) {
+                                activeIds[v.i] = true;
+                                var color = (v.t.indexOf('Ampel') !== -1 || v.t.indexOf('RSU') !== -1) ? '#e3b341' : '#1f6feb';
+                                var popup = '<div style="color:#000"><b>' + v.t + '</b><br>ID: ' + v.i + '<br>Geschwindigkeit: ' + v.s + ' km/h<br>Signal: ' + v.r + ' dBm</div>';
+                                if (markers[v.i]) { markers[v.i].setLatLng([v.la, v.lo]).setPopupContent(popup); }
+                                else { var m = L.circleMarker([v.la, v.lo], { radius: 10, fillColor: color, color: '#ffffff', weight: 2, fillOpacity: 0.9 }).bindPopup(popup); markers[v.i] = m; featureGroup.addLayer(m); }
+                            }
+                        });
+                        for (var id in markers) { if (!activeIds[id]) { featureGroup.removeLayer(markers[id]); map.removeLayer(markers[id]); delete markers[id]; } }
+                        map.invalidateSize();
+                    } catch (ex) {}
+                });
+                document.getElementById('stat').innerText = 'BT Verbunden!';
+            } catch (e) {
+                document.getElementById('stat').innerText = 'BT Fehler: ' + e;
+            }
+        }
+    </script>
+</body>
+</html>
