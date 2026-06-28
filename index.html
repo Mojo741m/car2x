@@ -14,13 +14,26 @@
         .btn { background: #238636; color: #fff; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
         .btn-ble { background: #1f6feb; }
         .btn-sec { background: #30363d; color: #c9d1d9; }
-        .status { font-size: 0.8rem; background: #21262d; padding: 6px 10px; border-radius: 20px; border: 1px solid #30363d; color: #7d8590; flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .status { font-size: 0.8rem; background: #21262d; padding: 6px 10px; border-radius: 20px; border: 1px solid #30363d; color: #58a6ff; flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; text-decoration: underline; font-weight: 600; }
         #map { flex: 1; width: 100%; height: 100%; }
+
+        /* Modal Overlay für Stationen-Liste */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(4px); z-index: 2000; justify-content: center; align-items: center; padding: 20px; box-sizing: border-box; }
+        .modal-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; width: 100%; max-width: 480px; max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .modal-header { padding: 15px; border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; background: #21262d; }
+        .modal-header h2 { margin: 0; font-size: 1.1rem; color: #58a6ff; }
+        .modal-close { background: none; border: none; color: #8b949e; font-size: 1.5rem; cursor: pointer; line-height: 1; }
+        .modal-body { padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        .station-item { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+        .station-title { font-weight: 600; font-size: 0.95rem; color: #c9d1d9; display: flex; justify-content: space-between; }
+        .badge-on { background: rgba(35, 134, 54, 0.2); color: #3fb950; border: 1px solid #238636; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
+        .badge-off { background: rgba(210, 153, 34, 0.2); color: #d29922; border: 1px solid #d29922; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
+        .station-details { font-size: 0.8rem; color: #8b949e; display: flex; gap: 15px; flex-wrap: wrap; }
     </style>
 </head>
 <body>
     <header>
-        <h1>🚗 ETSI ITS Car2X <span id="stat" class="status">Bereit</span></h1>
+        <h1>🚗 ETSI ITS Car2X <span id="stat" class="status" onclick="openModal()">Bereit</span></h1>
         <div class="controls">
             <button class="btn btn-ble" onclick="connectBLE()">📡 Bluetooth verbinden</button>
             <button class="btn btn-sec" onclick="setManualMode()">📍 Ort wählen</button>
@@ -29,8 +42,21 @@
     </header>
     <div id="map"></div>
 
+    <!-- Modal für Liste der ITS-Stationen -->
+    <div id="stationModal" class="modal-overlay" onclick="closeModalOnOuterClick(event)">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h2>📡 Active ITS-Stationen</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div id="modalList" class="modal-body">
+                <div style="text-align: center; color: #8b949e; padding: 20px;">Keine Daten empfangen. Verbinde Bluetooth!</div>
+            </div>
+        </div>
+    </div>
+
     <script>
-        var map = L.map('map', { zoomControl: false }).setView([51.1657, 10.4515], 6); // Deutschland Übersicht
+        var map = L.map('map', { zoomControl: false }).setView([51.1657, 10.4515], 6);
         L.control.zoom({ position: 'bottomright' }).addTo(map);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap', maxZoom: 19 }).addTo(map);
 
@@ -39,6 +65,7 @@
         var userMarker = null;
         var userLat = null, userLon = null;
         var bleDevice, gpsChar;
+        var lastReceivedData = null;
 
         function updateUserMarker(lat, lon) {
             userLat = lat; userLon = lon;
@@ -62,6 +89,31 @@
         map.on('click', function(e) { if (manualSelecting) { updateUserMarker(e.latlng.lat, e.latlng.lng); manualSelecting = false; } });
         function centerMap() { if (userLat && userLon) map.setView([userLat, userLon], 15); }
 
+        function openModal() { document.getElementById('stationModal').style.display = 'flex'; renderModalList(); }
+        function closeModal() { document.getElementById('stationModal').style.display = 'none'; }
+        function closeModalOnOuterClick(e) { if (e.target.id === 'stationModal') closeModal(); }
+
+        function renderModalList() {
+            var container = document.getElementById('modalList');
+            if (!lastReceivedData || !lastReceivedData.v || lastReceivedData.v.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: #8b949e; padding: 20px;">Aktuell keine aktiven ITS-Stationen im Speicher.</div>';
+                return;
+            }
+            var html = '';
+            lastReceivedData.v.forEach(v => {
+                var isVisible = (v.vp === 1);
+                var badge = isVisible ? '<span class="badge-on">🟢 Auf Karte</span>' : '<span class="badge-off">🟡 Ausgeblendet (Kein GPS)</span>';
+                html += '<div class="station-item">' +
+                    '<div class="station-title"><span>' + v.t + '</span>' + badge + '</div>' +
+                    '<div class="station-details">' +
+                    '<span>ID: <b>' + v.i + '</b></span>' +
+                    '<span>Tempo: <b>' + v.s + ' km/h</b></span>' +
+                    '<span>Signal: <b>' + v.r + ' dBm</b></span>' +
+                    '</div></div>';
+            });
+            container.innerHTML = html;
+        }
+
         async function connectBLE() {
             try {
                 document.getElementById('stat').innerText = 'Suche Bluetooth...';
@@ -79,7 +131,9 @@
                     const str = new TextDecoder().decode(e.target.value);
                     try {
                         const data = JSON.parse(str);
-                        document.getElementById('stat').innerText = 'ITS-Stationen: ' + data.c;
+                        lastReceivedData = data;
+                        document.getElementById('stat').innerText = 'ITS-Stationen: ' + data.c + ' 🔍';
+                        renderModalList();
                         var activeIds = {};
                         data.v.forEach(v => {
                             if (v.vp === 1) {
