@@ -30,7 +30,7 @@
         .station-title { font-weight: 600; font-size: 0.95rem; color: #c9d1d9; display: flex; justify-content: space-between; }
         .badge-on { background: rgba(35, 134, 54, 0.2); color: #3fb950; border: 1px solid #238636; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
         .badge-off { background: rgba(210, 153, 34, 0.2); color: #d29922; border: 1px solid #d29922; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
-        .station-details { font-size: 0.8rem; color: #8b949e; display: flex; gap: 15px; flex-wrap: wrap; }
+        .station-details { font-size: 0.8rem; color: #8b949e; display: flex; gap: 12px; flex-wrap: wrap; }
     </style>
 </head>
 <body>
@@ -127,6 +127,13 @@
         function closeModal() { document.getElementById('stationModal').style.display = 'none'; }
         function closeModalOnOuterClick(e) { if (e.target.id === 'stationModal') closeModal(); }
 
+        function getCompassDirection(deg) {
+            if (deg === undefined || deg === null || deg < 0) return 'k.A.';
+            var dirs = ['⬆️ N', '↗️ NO', '➔ O', '↘️ SO', '⬇️ S', '↙️ SW', '⬅️ W', '↖️ NW'];
+            var idx = Math.round(deg / 45) % 8;
+            return deg.toFixed(0) + '° (' + dirs[idx] + ')';
+        }
+
         function renderModalList() {
             var container = document.getElementById('modalList');
             if (!lastReceivedData || !lastReceivedData.v || lastReceivedData.v.length === 0) {
@@ -142,6 +149,7 @@
                     '<div class="station-details">' +
                     '<span>ID: <b>' + v.i + '</b></span>' +
                     '<span>Tempo: <b>' + v.s + ' km/h</b></span>' +
+                    '<span>Richtung: <b>' + getCompassDirection(v.h) + '</b></span>' +
                     '<span>Signal: <b>' + v.r + ' dBm</b></span>' +
                     '</div></div>';
             });
@@ -152,7 +160,6 @@
             try {
                 document.getElementById('stat').innerText = 'Suche Bluetooth...';
                 
-                // Exklusiver Filter: Zeigt NUR Geräte an, die den exakten Car2X Service ausstrahlen!
                 bleDevice = await navigator.bluetooth.requestDevice({
                     filters: [
                         { name: 'Car2X-Sniffer' },
@@ -178,7 +185,7 @@
                             if (v.vp === 1) {
                                 activeIds[v.i] = true;
                                 var color = (v.t.indexOf('Ampel') !== -1 || v.t.indexOf('RSU') !== -1) ? '#e3b341' : '#1f6feb';
-                                var popup = '<div style="color:#000"><b>' + v.t + '</b><br>ID: ' + v.i + '<br>Geschwindigkeit: ' + v.s + ' km/h<br>Signal: ' + v.r + ' dBm</div>';
+                                var popup = '<div style="color:#000"><b>' + v.t + '</b><br>ID: ' + v.i + '<br>Geschwindigkeit: ' + v.s + ' km/h<br>Fahrtrichtung: ' + getCompassDirection(v.h) + '<br>Signal: ' + v.r + ' dBm</div>';
                                 if (markers[v.i]) { markers[v.i].setLatLng([v.la, v.lo]).setPopupContent(popup); }
                                 else { var m = L.circleMarker([v.la, v.lo], { radius: 10, fillColor: color, color: '#ffffff', weight: 2, fillOpacity: 0.9 }).bindPopup(popup); markers[v.i] = m; featureGroup.addLayer(m); }
                             }
